@@ -2,6 +2,7 @@ use rand::Rng;
 use std::fs;
 
 mod video;
+pub mod opcode;
 
 const FONT_SET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
