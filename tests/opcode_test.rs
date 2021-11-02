@@ -1,7 +1,7 @@
 use chip8rs::core::*;
 
 #[test]
-fn it_adds_two() {
-    let mut opcode = opcode::OpCode::new(0x00E0);
-    assert_eq!(opcode.instr, opcode::Instrs::cls);
+fn recognize_opcode_for_instruction() {
+    let opcode = instructions::Instrs::from_u16(0x10E0).unwrap();
+    assert_eq!(opcode, instructions::Instrs::Jp(0xE0));
 }
