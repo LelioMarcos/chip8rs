@@ -1,10 +1,16 @@
 use rand::Rng;
 use std::fs;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const WIDTH: usize = 64;
+const HEIGHT: usize = 32;
+const ENTRY_POINT: u16 = 0x200;
 
 pub mod instructions;
 mod video;
 
-use instructions::Instrs;
+pub use instructions::Instruction;
 
 const FONT_SET: [u8; 80] = [
     0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -48,8 +54,8 @@ impl Chip8 {
             memory: vec![0; 4096],
             v: vec![0; 16],
             i: 0x0000,
-            pc: 0x0200,
-            gfx: vec![0; 64 * 32],
+            pc: ENTRY_POINT,
+            gfx: vec![0; WIDTH * HEIGHT],
             delay_timer: 0x00,
             sound_timer: 0x00,
             stack: vec![0; 16],
@@ -67,81 +73,80 @@ impl Chip8 {
         }
 
         for i in (0..game_buffer.len()).into_iter() {
-            self.memory[i + 512] = game_buffer[i];
+            self.memory[i + ENTRY_POINT as usize] = game_buffer[i];
         }
     }
 
     fn fetch_and_execute(&mut self, opcode: u16) {
-        if let Some(instr) = Instrs::from_u16(opcode) {
-            println!("{:?}", instr);
+        if let Some(instr) = Instruction::from_u16(opcode) {
             match instr {
-                Instrs::Cls => self.gfx = vec![0; 64 * 32],
-                Instrs::Ret => {
+                Instruction::Cls => self.gfx = vec![0; WIDTH * HEIGHT],
+                Instruction::Ret => {
                     self.sp -= 1;
-                    self.pc = self.stack[self.sp as usize];
+                    self.pc = self.stack[self.sp as usize] - 2;
                 }
-                Instrs::Jp(addr) => self.pc = addr,
-                Instrs::Call(addr) => {
+                Instruction::Jp(addr) => self.pc = addr - 2,
+                Instruction::Call(addr) => {
                     self.stack[self.sp as usize] = self.pc;
                     self.sp += 1;
-                    self.pc = addr;
+                    self.pc = addr - 2;
                 }
-                Instrs::Se(x, byte) => {
+                Instruction::Se(x, byte) => {
                     if self.v[x as usize] == byte {
                         self.pc += 2;
                     }
                 }
-                Instrs::Sne(x, byte) => {
+                Instruction::Sne(x, byte) => {
                     if self.v[x as usize] != byte {
                         self.pc += 2;
                     }
                 }
-                Instrs::SeXY(x, y) => {
+                Instruction::SeXY(x, y) => {
                     if self.v[x as usize] == self.v[y as usize] {
                         self.pc += 2;
                     }
                 }
-                Instrs::LdX(x, byte) => self.v[x as usize] = byte,
-                Instrs::AddX(x, byte) => self.v[x as usize] = self.v[x as usize].wrapping_add(byte),
-                Instrs::LdXY(x, y) => self.v[x as usize] = self.v[y as usize],
-                Instrs::Or(x, y) => self.v[x as usize] |= self.v[y as usize],
-                Instrs::And(x, y) => self.v[x as usize] &= self.v[y as usize],
-                Instrs::Xor(x, y) => self.v[x as usize] ^= self.v[y as usize],
-                Instrs::Add(x, y) => {
+                Instruction::LdX(x, byte) => self.v[x as usize] = byte,
+                Instruction::AddX(x, byte) => self.v[x as usize] = self.v[x as usize].wrapping_add(byte),
+                Instruction::LdXY(x, y) => self.v[x as usize] = self.v[y as usize],
+                Instruction::Or(x, y) => self.v[x as usize] |= self.v[y as usize],
+                Instruction::And(x, y) => self.v[x as usize] &= self.v[y as usize],
+                Instruction::Xor(x, y) => self.v[x as usize] ^= self.v[y as usize],
+                Instruction::Add(x, y) => {
                     let (result, overflow) = self.v[x as usize].overflowing_add(self.v[y as usize]);
                     self.v[x as usize] = result;
                     self.v[0xF] = if overflow { 1 } else { 0 };
                 }
-                Instrs::Sub(x, y) => {
+                Instruction::Sub(x, y) => {
                     let (result, overflow) = self.v[x as usize].overflowing_sub(self.v[y as usize]);
                     self.v[x as usize] = result;
                     self.v[0xF] = if overflow { 0 } else { 1 };
                 }
-                Instrs::Shr(x) => {
+                Instruction::Shr(x) => {
                     self.v[0xF] = self.v[x as usize] & 0x01;
                     self.v[x as usize] >>= 1;
                 }
-                Instrs::Subn(x, y) => {
+                Instruction::Subn(x, y) => {
                     let (result, overflow) = self.v[y as usize].overflowing_sub(self.v[x as usize]);
                     self.v[x as usize] = result;
                     self.v[0xF] = if overflow { 0 } else { 1 };
                 }
-                Instrs::Shl(x) => {
+                Instruction::Shl(x) => {
                     self.v[0xF] = (self.v[x as usize] & 0x80) >> 7;
                     self.v[x as usize] <<= 1;
                 }
-                Instrs::SneXY(x, y) => {
+                Instruction::SneXY(x, y) => {
                     if self.v[x as usize] != self.v[y as usize] {
                         self.pc += 2;
                     }
                 }
-                Instrs::LdI(addr) => self.i = addr,
-                Instrs::JpV0(addr) => self.pc = addr + self.v[0] as u16,
-                Instrs::Rnd(x, byte) => {
+                Instruction::LdI(addr) => self.i = addr,
+                Instruction::JpV0(addr) => self.pc = addr + self.v[0] as u16,
+                Instruction::Rnd(x, byte) => {
                     let mut r = rand::thread_rng();
                     self.v[x as usize] = r.gen_range(0..=255) & byte as u8;
                 }
-                Instrs::Drw(x, y, n) => {
+                Instruction::Drw(x, y, n) => {
                     let px = self.v[x as usize] as u16;
                     let py = self.v[y as usize] as u16;
                     let height = n;
@@ -166,18 +171,18 @@ impl Chip8 {
 
                     self.draw_flag = 1;
                 }
-                Instrs::Skp(x) => {
+                Instruction::Skp(x) => {
                     if self.key[self.v[x as usize] as usize] != 0 {
                         self.pc += 2;
                     }
                 }
-                Instrs::Sknp(x) => {
+                Instruction::Sknp(x) => {
                     if self.key[self.v[x as usize] as usize] == 0 {
                         self.pc += 2;
                     }
                 }
-                Instrs::LdVxDt(x) => self.delay_timer = self.v[x as usize],
-                Instrs::LdK(x) => {
+                Instruction::LdVxDt(x) => self.delay_timer = self.v[x as usize],
+                Instruction::LdK(x) => {
                     self.key_flag = true;
                     for i in 0..16 {
                         if self.key[i] == 1 {
@@ -187,11 +192,11 @@ impl Chip8 {
                         }
                     }
                 }
-                Instrs::LdDtVx(x) => self.delay_timer = self.v[x as usize],
-                Instrs::LdSt(x) => self.sound_timer = self.v[x as usize],
-                Instrs::AddI(x) => self.i = self.i.wrapping_add(self.v[x as usize] as u16),
-                Instrs::LdF(x) => self.i = self.v[x as usize] as u16 * 5,
-                Instrs::LdB(x) => {
+                Instruction::LdDtVx(x) => self.delay_timer = self.v[x as usize],
+                Instruction::LdSt(x) => self.sound_timer = self.v[x as usize],
+                Instruction::AddI(x) => self.i = self.i.wrapping_add(self.v[x as usize] as u16),
+                Instruction::LdF(x) => self.i = self.v[x as usize] as u16 * 5,
+                Instruction::LdB(x) => {
                     let num = self.v[x as usize];
                     let pos = self.i as usize;
 
@@ -199,8 +204,8 @@ impl Chip8 {
                     self.memory[pos + 1] = (num / 10) % 10;
                     self.memory[pos + 2] = num % 10;
                 }
-                Instrs::LdIx(x) => self.memory.copy_from_slice(&self.v[0..x as usize]),
-                Instrs::LdVxI(x) => self.v[0..x as usize].copy_from_slice(
+                Instruction::LdIx(x) => self.memory.copy_from_slice(&self.v[0..x as usize]),
+                Instruction::LdVxI(x) => self.v[0..x as usize].copy_from_slice(
                     &self.memory[(self.i as usize)..(self.i as usize + x as usize)],
                 ),
             }
@@ -217,19 +222,34 @@ impl Chip8 {
         self.pc += 2;
     }
 
+    fn emulate_cycle(&mut self) {
+        let opcode = self.get_opcode();
+        self.fetch_and_execute(opcode);
+        video::draw(&self.gfx);
+    }
+
     pub fn run_game(&mut self, path: &str) {
         let game_buffer = fs::read(path).unwrap();
         self.load_game(&game_buffer);
 
         loop {
-            let opcode = self.get_opcode();
-            //println!("{:X} {:X}", opcode, self.pc);
-            self.fetch_and_execute(opcode);
-            video::draw(&self.gfx);
+            limit_fps(|| {
+                self.emulate_cycle();
+            });
 
             if !self.key_flag {
                 self.next_opcode();
             }
         }
+    }
+}
+
+fn limit_fps<F: FnMut()>(mut f: F) {
+    let start = Instant::now();
+    f();
+    let elapsed = start.elapsed();
+
+    if (elapsed.as_millis() as u16) < (1000 / 60) {
+        thread::sleep(Duration::from_millis((1000 / 60) - (elapsed.as_millis() as u16) as u64));
     }
 }
